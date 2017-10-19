@@ -13,4 +13,5 @@ public class MaterialDef : MonoBehaviour {
     public float Ks = 1.0f;
     public MaterialType materialType = MaterialType.DIFFUSE_AND_GLOSSY;
     public float Ior = 1.5f;
+    public Vector3 ColorAbsorb = Vector3.zero;
 }

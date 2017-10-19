@@ -5,6 +5,14 @@ using UnityEngine;
 [RequireComponent(typeof(Camera))]
 public class RayTracer : MonoBehaviour {
 
+    [Range(1, 128)]
+    public int samplePerPixel = 1;
+    public bool useDof = false;
+    [Range(1, 128)]
+    public int dofSampleNum = 1;
+    public float focalLength = 1.0f;
+    public float apertureRadius = 1.0f;
+
     private Texture2D screenTex;
     private int screenWidth;
     private int screenHeight;
@@ -13,6 +21,7 @@ public class RayTracer : MonoBehaviour {
     private Light[] lights;
     private int collisionMask = 1 << 31;
     private Color RGBAZero;
+    private bool drawDebugRay = false;
 
 	// Use this for initialization
 	void Start () {
@@ -25,12 +34,29 @@ public class RayTracer : MonoBehaviour {
         RGBAZero = new Color(0, 0, 0, 0);
 
         GenerateColliders();
+
+        drawDebugRay = false;
         RayTrace();
-	}
+        drawDebugRay = true;
+    }
 	
 	// Update is called once per frame
 	void Update () {
-        
+        if(Input.GetMouseButtonDown(0))
+        {
+            Ray ray = cameraToTrace.ScreenPointToRay(Input.mousePosition);
+            Vector3 hitPosition;
+            TraceRay(ray, 0, null, false, out hitPosition);
+
+            if (drawDebugRay)
+            {
+                Debug.Log(Vector3.Distance(hitPosition, cameraToTrace.transform.position));
+                Debug.Log(ray.origin + " " + cameraToTrace.transform.position);
+                Debug.DrawLine(cameraToTrace.transform.position, hitPosition, Color.white, 10.0f);
+
+                Debug.DrawLine(cameraToTrace.transform.position, ray.GetPoint(focalLength), Color.cyan, 10.0f);
+            }
+        }
     }
 
     void OnRenderImage(RenderTexture source, RenderTexture destination)
@@ -40,14 +66,58 @@ public class RayTracer : MonoBehaviour {
 
     private void RayTrace()
     {
+        Vector3 cameraPos = cameraToTrace.transform.position;
+        Vector3 cameraRight = cameraToTrace.transform.right;
+        Vector3 cameraUp = cameraToTrace.transform.up;
+
         int index = 0;
         for (int row = 0; row < screenHeight; ++row)
         {
             for (int col = 0; col < screenWidth; ++col)
             {
+                Color color = RGBAZero;
 
-                Ray ray = cameraToTrace.ScreenPointToRay(new Vector3(col, row, 0));
-                Color color = TraceRay(ray, 0);
+                if (useDof)
+                {
+                    for (int dofSampleI = 0; dofSampleI < dofSampleNum; ++dofSampleI)
+                    {
+                        Ray ray = cameraToTrace.ScreenPointToRay(new Vector3(col, row, 0));
+                        Vector3 focusPoint = ray.GetPoint(focalLength);
+
+                        float camOffsetX = (Random.value - 0.5f) * apertureRadius;
+                        float camOffsetY = (Random.value - 0.5f) * apertureRadius;
+                        //cameraToTrace.transform.position = cameraPos + cameraRight * camOffsetX + cameraUp * camOffsetY;
+                        ray.origin += cameraRight * camOffsetX + cameraUp * camOffsetY;
+
+                        Color sampleColor = RGBAZero;
+                        for (int i = 0; i < samplePerPixel; ++i)
+                        {
+                            float offsetX = Random.value;
+                            float offsetY = Random.value;
+                            // ray = cameraToTrace.ScreenPointToRay(new Vector3(col + offsetX, row + offsetY, 0));
+                            ray.origin += new Vector3(offsetX / screenWidth, offsetY / screenHeight, 0);
+                            ray.direction = (focusPoint - ray.origin).normalized;
+                            Vector3 hitPosition;
+                            sampleColor += TraceRay(ray, 0, null, false, out hitPosition);
+                        }
+                        sampleColor /= samplePerPixel;
+
+                        color += sampleColor;
+                    }
+                    color /= dofSampleNum;
+                }
+                else
+                {
+                    for (int i = 0; i < samplePerPixel; ++i)
+                    {
+                        float offsetX = Random.value;
+                        float offsetY = Random.value;
+                        Ray ray = cameraToTrace.ScreenPointToRay(new Vector3(col + offsetX, row + offsetY, 0));
+                        Vector3 hitPosition;
+                        color += TraceRay(ray, 0, null, false, out hitPosition);
+                    }
+                    color /= samplePerPixel;               
+                }
 
                 colors[index] = (byte)(Mathf.Clamp01(color.r) * 255);
                 colors[index + 1] = (byte)(Mathf.Clamp01(color.g) * 255);
@@ -60,14 +130,61 @@ public class RayTracer : MonoBehaviour {
         screenTex.Apply();
     }
 
-    private Color TraceRay(Ray ray, int depth)
+    private Color TraceRay(Ray ray, int depth, MeshCollider lastHitCollider, bool innerRay, out Vector3 hitPosition)
     {
         Color color = RGBAZero;
 
-        RaycastHit hit;
+        RaycastHit hit = new RaycastHit();
+        hitPosition = Vector3.zero;
 
-        if (depth < 5 && Physics.Raycast(ray, out hit, Mathf.Infinity, collisionMask))
+        if (depth < 5)
         {
+            if(innerRay)
+            {
+                Ray inverseRay = new Ray();
+                inverseRay.origin = ray.GetPoint(999.0f);
+                inverseRay.direction = -ray.direction;
+
+                RaycastHit[] hits;
+                hits = Physics.RaycastAll(inverseRay, 999, collisionMask);
+
+                if (hits.Length <= 0)
+                {
+                    return color;
+                }
+                else
+                {
+                    Vector3 offsetOrigin = ray.GetPoint(0.0001f);
+                    float maxDist = -1;
+                    for(int hitId = 0; hitId < hits.Length; ++hitId)
+                    {
+                        Vector3 hitDir = (hits[hitId].point - offsetOrigin).normalized;
+                        if(Vector3.Dot(hitDir, ray.direction) > 0)
+                        {
+                            float distToOrigin = Vector3.Distance(hits[hitId].point, inverseRay.origin);
+                            if(distToOrigin > maxDist)
+                            {
+                                maxDist = distToOrigin;
+                                hit = hits[hitId];
+                            }
+                        }
+                    }
+
+                    if(maxDist < 0)
+                    {
+                        return color;
+                    }
+                }
+            }
+            else
+            {
+                if(!Physics.Raycast(ray, out hit, Mathf.Infinity, collisionMask))
+                {
+                    return color;
+                }
+            }
+
+
             MaterialDef materialDef = hit.transform.GetComponent<MaterialDef>();
             MeshCollider collider = hit.collider as MeshCollider;
             Mesh mesh = collider.sharedMesh;
@@ -80,45 +197,91 @@ public class RayTracer : MonoBehaviour {
             interpolateNormal.Normalize();
             interpolateNormal = hit.transform.TransformDirection(interpolateNormal);
 
+            if(innerRay)
+            {
+                interpolateNormal = -interpolateNormal;
+            }
+
+            hitPosition = hit.point;
+
             switch (materialDef.materialType)
             {
                 case MaterialType.REFLECTION_AND_REFRACTION:
                     {
                         Vector3 inDir = ray.direction;
-                        Vector3 refractionDir = refract(inDir, interpolateNormal, materialDef.Ior);
-                        Vector3 reflectionDir = Vector3.Reflect(inDir, interpolateNormal);
-                        Vector3 reflectionOrigin = (Vector3.Dot(reflectionDir, interpolateNormal) < 0) ? (hit.point - interpolateNormal * 0.00001f) : (hit.point + interpolateNormal * 0.00001f);
-                        Vector3 refractionOrigin = (Vector3.Dot(refractionDir, interpolateNormal) < 0) ? (hit.point - interpolateNormal * 0.00001f) : (hit.point + interpolateNormal * 0.00001f);
+                        Color newDiffuseColor = RGBAZero;
 
-                        Color refractionColor = TraceRay(new Ray(refractionOrigin, refractionDir), depth + 1);
-                        Color reflectionColor = TraceRay(new Ray(reflectionOrigin, reflectionDir), depth + 1);
                         float kr;
                         fresnel(inDir, interpolateNormal, materialDef.Ior, out kr);
-                        color = reflectionColor * kr + refractionColor * (1 - kr);
 
+                        //reflect
+                        Vector3 reflectionDir = Vector3.Reflect(inDir, interpolateNormal);
+                        Vector3 reflectionOrigin = (Vector3.Dot(reflectionDir, interpolateNormal) < 0) ? (hit.point - interpolateNormal * 0.00001f) : (hit.point + interpolateNormal * 0.00001f);
+                        Vector3 reflectionHitPosition;
+                        Color reflectionColor = TraceRay(new Ray(reflectionOrigin, reflectionDir), depth + 1, collider, innerRay, out reflectionHitPosition);
+                        newDiffuseColor += reflectionColor * kr;
+
+                        Vector3 refractionDir = Vector3.zero;
+                        Vector3 refractionOrigin = Vector3.zero;
+                        Vector3 refractionHitPosition = Vector3.zero;
+                        //refract
+                        if (kr < 1.0f)
+                        {
+                            refractionDir = refract(inDir, interpolateNormal, materialDef.Ior);
+                            refractionOrigin = (Vector3.Dot(refractionDir, interpolateNormal) < 0) ? (hit.point - interpolateNormal * 0.00001f) : (hit.point + interpolateNormal * 0.00001f);
+                            Color refractionColor = TraceRay(new Ray(refractionOrigin, refractionDir), depth + 1, collider, !innerRay, out refractionHitPosition);
+                            
+
+                            float absorbDist = 0;
+                            float absorbR = 1;
+                            float absorbG = 1;
+                            float absorbB = 1;
+                            if ((depth + 1 < 5) && !innerRay)
+                            {
+                                absorbDist = Vector3.Distance(hit.point, refractionHitPosition);
+                                absorbR = Mathf.Exp(-materialDef.ColorAbsorb.x * absorbDist);
+                                absorbG = Mathf.Exp(-materialDef.ColorAbsorb.y * absorbDist);
+                                absorbB = Mathf.Exp(-materialDef.ColorAbsorb.z * absorbDist);
+                            }
+
+
+                            newDiffuseColor += refractionColor * (1 - kr) * new Color(absorbR, absorbG, absorbB);
+                        }
+
+                        
+
+                        if (drawDebugRay)
+                        {
+                            if (kr < 1.0f)
+                            {
+                                Debug.DrawLine(refractionOrigin, refractionHitPosition, Color.blue, 10.0f);
+                            }
+                            Debug.DrawLine(reflectionOrigin, reflectionHitPosition, Color.black, 10.0f);
+                            Debug.DrawLine(hit.point, hit.point + interpolateNormal * 5, Color.green, 10.0f);
+                        }
+                        
+                        color = TraceLight(hit.point + interpolateNormal * 0.00001f, interpolateNormal, RGBAZero, materialDef) + newDiffuseColor;
+                        
+                        
                     }
                     break;
                 case MaterialType.REFLECTION:
-                    {
-                        Color diffuseColor = RGBAZero;
-                        Material mat = hit.transform.GetComponent<Renderer>().material;
-                        if (mat.mainTexture != null)
-                        {
-                            Vector2 texCoord = hit.textureCoord;
-                            diffuseColor += (mat.mainTexture as Texture2D).GetPixelBilinear(texCoord.x, texCoord.y);
-                        }
-                        else
-                        {
-                            diffuseColor += mat.color;
-                        }
-
+                    {                   
                         Vector3 inDir = ray.direction;
                         float kr;
                         fresnel(inDir, interpolateNormal, materialDef.Ior, out kr);
                         Vector3 reflectionDir = Vector3.Reflect(inDir, interpolateNormal);
                         Vector3 reflectionOrigin = (Vector3.Dot(reflectionDir, interpolateNormal) < 0) ? (hit.point + interpolateNormal * 0.00001f) : (hit.point - interpolateNormal * 0.00001f);
                         Ray reflectionRay = new Ray(reflectionOrigin, reflectionDir);
-                        color = TraceRay(reflectionRay, depth + 1) * kr + TraceLight(hit.point + interpolateNormal * 0.00001f, interpolateNormal, diffuseColor, materialDef) * (1 - kr);
+
+                        Vector3 reflectionHitPosition;
+                        color = TraceRay(reflectionRay, depth + 1, collider, innerRay, out reflectionHitPosition) * kr + TraceLight(hit.point + interpolateNormal * 0.00001f, interpolateNormal, RGBAZero, materialDef);
+
+                        if (drawDebugRay)
+                        {
+                            Debug.DrawLine(reflectionOrigin, reflectionHitPosition, Color.red, 10.0f);
+                            Debug.DrawLine(hit.point, hit.point + interpolateNormal * 5, Color.green, 10.0f);
+                        }
                     }
                     break;
                 case MaterialType.DIFFUSE_AND_GLOSSY:
@@ -136,6 +299,11 @@ public class RayTracer : MonoBehaviour {
                         }
 
                         color = TraceLight(hit.point + interpolateNormal * 0.00001f, interpolateNormal, diffuseColor, materialDef);
+
+                        if (drawDebugRay)
+                        {
+                            Debug.DrawLine(hit.point, hit.point + interpolateNormal * 5, Color.green, 10.0f);
+                        }
                     }
                     break;
                 default:
