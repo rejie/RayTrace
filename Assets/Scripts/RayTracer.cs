@@ -416,47 +416,49 @@ public class RayTracer : MonoBehaviour {
                 {
                     Color color = RGBAZero;
 
-                    Vector3 lightPos = light.transform.position;
-                    Vector3 right = light.transform.right;
-                    Vector3 pNormal = light.transform.forward;
-                    Vector3 up = light.transform.up;
-
+                    float sampleNumber = 2;
                     Vector2 lightArea = light.areaSize;
-
-                    Vector3 projection = projectionOnPlane(pos, lightPos, pNormal);
-                    Vector3 dir = projection - lightPos;
-
-                    Vector2 diagonal = new Vector2(Vector3.Dot(dir, right), Vector3.Dot(dir, up));
-                    Vector2 nearest2D = new Vector2(Mathf.Clamp(diagonal.x, -lightArea.x, lightArea.x), Mathf.Clamp(diagonal.y, -lightArea.y, lightArea.y));
-                    Vector3 nearestPointInside = lightPos + right * nearest2D.x + up * nearest2D.y;
-
-                    float dist = Vector3.Distance(pos, nearestPointInside);
-                    Vector3 L = (nearestPointInside - pos).normalized;
-                    float r = Vector3.Distance(pos, nearestPointInside) / light.range;
+                    float sampleRengeX = lightArea.x / sampleNumber;
+                    float sampleRengeY = lightArea.y / sampleNumber;
+                    int sampleX = (int)(lightArea.x / sampleRengeX);
+                    int sampleY = (int)(lightArea.y / sampleRengeY);
+                    float r = distance / light.range;
                     float Attenuation = 1.0f + 25.0f * r * r;
-
-                    float nDotL = Vector3.Dot(pNormal, -L);
-
-                    if(nDotL > 0 && sideOfPlane(pos, lightPos, pNormal) == 1)
+                    for (int i = 0; i < sampleY; i++)
                     {
-                        Vector3 viewVector = (cameraToTrace.transform.position - pos).normalized;
-                        Vector3 R = Vector3.Reflect(-viewVector, normal);
-                        Vector3 E = linePlaneIntersect(pos, R, lightPos, pNormal);
-
-                        float specAngle = Vector3.Dot(-R, pNormal);
-                        if(specAngle > 0.0f)
+                        for (int j = 0; j < sampleX; j++)
                         {
-                            Vector3 dirSpec = E - lightPos;
-                            Vector2 dirSpec2D = new Vector2(Vector3.Dot(dirSpec, right), Vector3.Dot(dirSpec, up));
-                            Vector2 nearestSpec2D = new Vector2(Mathf.Clamp(dirSpec2D.x, -lightArea.x, lightArea.x), Mathf.Clamp(dirSpec2D.y, -lightArea.y, lightArea.y));
-                            float specFactor = 1 - Mathf.Clamp(Vector2.Distance(nearestSpec2D, dirSpec2D) * 128, 0, 1);
+                            
+                            float offsetRight = lightArea.x * (((sampleX - j) / sampleX) - 0.5f);
+                            float offsetUp = lightArea.y * (((sampleY - i) / sampleY) - 0.5f);
+                            float u = Random.Range(0.0f, 1f);
+                            float v = Random.Range(0.0f, 1f);
+                            float sida = 2 * Mathf.PI * u;
+                            float radius = Mathf.Sqrt(v);
 
-                            color += light.color * light.intensity * specFactor * specAngle / Attenuation;
+                            //offsetRight = lightArea.x * Mathf.Cos(sida) * radius;
+                            //offsetUp = lightArea.y * Mathf.Sin(sida) * radius;
+                            Vector3 lightPos = light.transform.position + light.transform.right * offsetRight + light.transform.up * offsetUp;
+                            if (Physics.Raycast(pos , (lightPos - pos).normalized, distance, collisionMask))
+                            {
+                                break;
+                            }
+                            Vector3 Ldirection = (lightPos - pos).normalized;
+                            Vector3 viewVector = (cameraToTrace.transform.position - pos).normalized;
+                            Vector3 halfVector = (Ldirection + viewVector).normalized;
+                            float dot = Vector3.Dot(halfVector, normal);
+                            float spec = 0;
+                            if (dot > 0)
+                            {
+                                spec = Mathf.Pow(dot, 128);
+                            }
+                            color += (light.color * spec * materialDef.Ks + diffuseColor * diffuse * materialDef.Kd) / (sampleX * sampleY);
+                            //integrate += (spec) * sampleRengeX * sampleRengeY;
                         }
 
-                        color += light.intensity * diffuseColor * nDotL / Attenuation;
                     }
-
+                    color *= light.intensity / Attenuation;
+                    //return (light.color * spec * materialDef.Ks + diffuseColor * diffuse * materialDef.Kd) * light.intensity / Attenuation;
                     return color;
                 }
             }
